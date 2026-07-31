@@ -15,6 +15,7 @@ EXPECTED_CONTENT_FILES = 330
 EXPECTED_OPERATIONAL_FILES = 2
 EXPECTED_PAPER_PAGES = 145
 EXPECTED_PAPER_IMAGES = 151
+PROPOSAL_ROOT = Path("技术路线/交互式知识地图提案")
 PAGES_WITHOUT_EMBEDDED_FIGURES = {
     "P016.md",
     "P135.md",
@@ -87,6 +88,10 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def is_proposal_file(relative: Path) -> bool:
+    return relative == PROPOSAL_ROOT or PROPOSAL_ROOT in relative.parents
+
+
 def collect_files(errors: list[str]) -> list[Path]:
     files: list[Path] = []
     for current, directories, names in os.walk(ROOT, followlinks=False):
@@ -149,6 +154,8 @@ def check_paths(files: list[Path], errors: list[str]) -> None:
             errors.append(f"公开仓库含系统文件：{relative}")
         if path.suffix.lower() in FORBIDDEN_SUFFIXES:
             errors.append(f"公开仓库含源文档、数据表或压缩包：{relative}")
+        if is_proposal_file(relative) and path.suffix.lower() != ".md":
+            errors.append(f"交互式知识地图提案目录只允许Markdown：{relative}")
 
 
 def check_export_manifest(files: list[Path], errors: list[str]) -> None:
@@ -179,17 +186,27 @@ def check_export_manifest(files: list[Path], errors: list[str]) -> None:
             errors.append(f".github/public-release.json含重复路径：{relative}")
         by_path[relative] = record
 
+    # The release manifest remains a hash-locked snapshot of reader content.
+    # GitHub operational files are controlled by an explicit allowlist, while
+    # RFC documents under PROPOSAL_ROOT are reviewed as Markdown extensions and
+    # intentionally do not change the published content snapshot.
+    tracked_records = {
+        relative: record for relative, record in by_path.items()
+        if relative.parts[0] != ".github" and not is_proposal_file(relative)
+    }
     actual = {
         path.relative_to(ROOT) for path in files
         if path != EXPORT_MANIFEST
+        and path.relative_to(ROOT).parts[0] != ".github"
+        and not is_proposal_file(path.relative_to(ROOT))
     }
-    if set(by_path) != actual:
+    if set(tracked_records) != actual:
         errors.append(
             "公开仓库与导出清单不一致；"
-            f"未登记={sorted(actual - set(by_path))}；"
-            f"缺失={sorted(set(by_path) - actual)}"
+            f"未登记={sorted(actual - set(tracked_records))}；"
+            f"缺失={sorted(set(tracked_records) - actual)}"
         )
-    for relative, record in by_path.items():
+    for relative, record in tracked_records.items():
         path = ROOT / relative
         if not path.is_file():
             continue
@@ -198,8 +215,12 @@ def check_export_manifest(files: list[Path], errors: list[str]) -> None:
         if record.get("sha256") != sha256(path):
             errors.append(f"文件内容偏离导出结果：{relative}")
 
-    content_count = sum(path.parts[0] != ".github" for path in actual)
-    operational_count = len(actual) - content_count
+    content_count = len(actual)
+    operational_count = sum(
+        path.relative_to(ROOT).parts[0] == ".github"
+        and path != EXPORT_MANIFEST
+        for path in files
+    )
     if content_count != EXPECTED_CONTENT_FILES:
         errors.append(
             f"公开读者内容应为{EXPECTED_CONTENT_FILES}个文件，实际为{content_count}"
@@ -300,7 +321,7 @@ def main() -> None:
         "Public repository validation passed: "
         f"content={EXPECTED_CONTENT_FILES}, operational={EXPECTED_OPERATIONAL_FILES}, "
         f"papers={EXPECTED_PAPER_PAGES}, paper_images={EXPECTED_PAPER_IMAGES}, "
-        "hash manifest and internal links verified."
+        "content hash manifest, proposal Markdown and internal links verified."
     )
 
 
